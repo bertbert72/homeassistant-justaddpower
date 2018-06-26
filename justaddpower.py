@@ -1,57 +1,73 @@
 """
-Support for the Just Add Power 2G HP over IP system (Cisco)
+Support for the Just Add Power HD over IP system (Cisco)
 
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/justaddpower
 """
 import logging
 import socket
+import threading
 import time
 import re
+import queue
+import types
+import ipaddress
+import random
 
 import voluptuous as vol
 
 from homeassistant.components.media_player import (
-    DOMAIN, MEDIA_PLAYER_SCHEMA, PLATFORM_SCHEMA, SUPPORT_SELECT_SOURCE,
-    MediaPlayerDevice)
+    DOMAIN, MEDIA_PLAYER_SCHEMA, PLATFORM_SCHEMA, SUPPORT_SELECT_SOURCE, MediaPlayerDevice)
 from homeassistant.const import (
-    ATTR_ENTITY_ID, CONF_NAME, CONF_HOST, CONF_PORT, STATE_OFF, STATE_ON,
-    CONF_USERNAME,CONF_PASSWORD)
+    CONF_NAME, CONF_HOST, STATE_OFF, STATE_ON, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS)
 import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORT_JUSTADDPOWER = SUPPORT_SELECT_SOURCE
 
-ZONE_SCHEMA = vol.Schema({
-    vol.Required(CONF_NAME): cv.string,
-})
-
-SOURCE_SCHEMA = vol.Schema({
-    vol.Required(CONF_NAME): cv.string,
-})
-
-CONF_ZONES = 'zones'
-CONF_SOURCES = 'sources'
-CONF_RXSUBNET = 'rxsubnet'
+CONF_SWITCH = 'switch'
+CONF_RECEIVERS = 'receivers'
+CONF_TRANSMITTERS = 'transmitters'
+CONF_RX_SUBNET = 'rx_subnet'
+CONF_MIN_REFRESH_INTERVAL = 'min_refresh_interval'
+CONF_USB = 'usb'
+CONF_IMAGE_PULL = 'image_pull'
 
 DATA_JUSTADDPOWER = 'justaddpower'
+TELNET_PORT = 23
 
+SWITCH_SCHEMA = vol.Schema({
+    vol.Required(CONF_HOST): cv.string,
+    vol.Optional(CONF_USERNAME, default="cisco"): cv.string,
+    vol.Optional(CONF_PASSWORD, default="cisco"): cv.string,
+    vol.Optional(CONF_RX_SUBNET, default="10.128.0.0"): cv.string,
+    vol.Optional(CONF_MIN_REFRESH_INTERVAL, default=10): cv.positive_int,
+})
 
-# Valid zone ids: 1-99
-ZONE_IDS = vol.All(vol.Coerce(int), vol.Range(min=1, max=99))
+RECEIVER_SCHEMA = vol.Schema({
+    vol.Required(CONF_NAME): cv.string,
+    vol.Optional(CONF_USB, default=False): cv.boolean,
+    vol.Optional(CONF_IP_ADDRESS, default=""): cv.string,
+    vol.Optional(CONF_IMAGE_PULL, default=False): cv.boolean,
+})
 
-# Valid source ids: 1-99
-SOURCE_IDS = vol.All(vol.Coerce(int), vol.Range(min=1, max=99))
+TRANSMITTER_SCHEMA = vol.Schema({
+    vol.Required(CONF_NAME): cv.string,
+    vol.Optional(CONF_USB, default=False): cv.boolean,
+})
+
+# Valid receiver ids: 1-350
+RECEIVERS_IDS = vol.All(vol.Coerce(int), vol.Range(min=1, max=350))
+
+# Valid transmitter ids: 1-350
+TRANSMITTER_IDS = vol.All(vol.Coerce(int), vol.Range(min=1, max=350))
 
 PLATFORM_SCHEMA = vol.All(
     PLATFORM_SCHEMA.extend({
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_ZONES): vol.Schema({ZONE_IDS: ZONE_SCHEMA}),
-        vol.Required(CONF_SOURCES): vol.Schema({SOURCE_IDS: SOURCE_SCHEMA}),
-        vol.Optional(CONF_USERNAME, default="cisco"): cv.string,
-        vol.Optional(CONF_PASSWORD, default="cisco"): cv.string,
-        vol.Optional(CONF_RXSUBNET, default="10.128.0"): cv.string,
+        vol.Required(CONF_SWITCH): vol.Schema(SWITCH_SCHEMA),
+        vol.Required(CONF_RECEIVERS): vol.Schema({RECEIVERS_IDS: RECEIVER_SCHEMA}),
+        vol.Required(CONF_TRANSMITTERS): vol.Schema({TRANSMITTER_IDS: TRANSMITTER_SCHEMA}),
     }))
 
 
@@ -60,116 +76,265 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     if DATA_JUSTADDPOWER not in hass.data:
         hass.data[DATA_JUSTADDPOWER] = {}
 
-    host = config.get(CONF_HOST)
-    swUser = config.get(CONF_USERNAME)
-    swPassword = config.get(CONF_PASSWORD)
-    rxsubnet = config.get(CONF_RXSUBNET)
+    rx_gateway = int(ipaddress.ip_address(config[CONF_SWITCH].get(CONF_RX_SUBNET))) + 1
+    switch = types.SimpleNamespace()
+    switch.host = config[CONF_SWITCH].get(CONF_HOST)
+    switch.user = config[CONF_SWITCH].get(CONF_USERNAME)
+    switch.password = config[CONF_SWITCH].get(CONF_PASSWORD)
+    switch.min_refresh_interval = config[CONF_SWITCH].get(CONF_MIN_REFRESH_INTERVAL)
+    switch.sock = None
+    switch.queue = queue.Queue(1)
+    switch.last_refresh = 0
+    switch.last_response = ""
+    switch.tx_count = 0
+    switch.rx_count = 0
 
-    sources = {source_id: extra[CONF_NAME] for source_id, extra
-               in config[CONF_SOURCES].items()}
+    transmitters = {transmitter_id: extra[CONF_NAME] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
+    transmitters_usb = {transmitter_id: extra[CONF_USB] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
 
     devices = []
-    for zone_id, extra in config[CONF_ZONES].items():
-        _LOGGER.info("Adding zone %d - %s", zone_id, extra[CONF_NAME])
-        unique_id = "{}-{}".format(host, zone_id)
-        device = JustaddpowerZone(host, swUser, swPassword, rxsubnet, sources, zone_id, extra[CONF_NAME])
+    for receiver_id, extra in config[CONF_RECEIVERS].items():
+        _LOGGER.info("Adding Rx%d - %s", receiver_id, extra[CONF_NAME])
+        unique_id = "{}-{}".format(switch.host, receiver_id)
+        rx_ip = extra[CONF_IP_ADDRESS] or (ipaddress.ip_address(rx_gateway + receiver_id).__str__())
+        device = JustaddpowerReceiver(switch, rx_ip, extra[CONF_IMAGE_PULL], transmitters,
+                                      transmitters_usb if extra[CONF_USB] else None, receiver_id, extra[CONF_NAME])
         hass.data[DATA_JUSTADDPOWER][unique_id] = device
         devices.append(device)
 
     add_devices(devices, True)
 
 
-class JustaddpowerZone(MediaPlayerDevice):
-    """Representation of a Just Add Power zone."""
+class JustaddpowerReceiver(MediaPlayerDevice):
+    """Representation of a Just Add Power receiver."""
 
-    def __init__(self, host, swUser, swPassword, rxsubnet, sources, zone_id, zone_name):
-        """Initialize new zone."""
-        self._host = host
-        self._user = swUser
-        self._password = swPassword
-        self._source_id_name = sources
-        self._source_name_id = {v: k for k, v in sources.items()}
-        # ordered list of all source names
-        self._source_names = sorted(self._source_name_id.keys(),
-                                    key=lambda v: self._source_name_id[v])
-        self._zone_id = zone_id
-        self._name = zone_name
-        #self._state = STATE_ON
-        self._source = None
-        self._debug = False
-        self._sock = None
-        self._port = 23
-        self._rxsubnet = rxsubnet
+    def __init__(self, switch, rx_ip, image_pull, transmitters, transmitters_usb, receiver_id, receiver_name):
+        """Initialize new receiver."""
 
-        bufsize=1024
+        self._transmitter_id_name = transmitters
+        self._transmitter_name_id = {v: k for k, v in transmitters.items()}
+        # ordered list of all transmitter names
+        self._transmitter_names = sorted(self._transmitter_name_id.keys(),
+                                         key=lambda v: self._transmitter_name_id[v])
+        self._transmitters_usb = transmitters_usb
+        self._receiver_id = receiver_id
+        self._receiver_name = receiver_name
+        self._state = STATE_OFF
+        self._transmitter = None
+        self._trace = False
+        self._rx_sock = None
+        self._rx_ip = rx_ip
+        self._rx_mac = None
+        self._image_pull = image_pull
+        self._switch = switch
+
+        self.get_switch_config()
+
         try:
-            self.connect(self._host, self._port)
-            tosend = self._user + "\r" + self._password + "\r show vlan\r"
-            if self._debug:
-                _LOGGER.warning("Sending request: '%s'", tosend)
+            cmd = "ifconfig | grep eth0:stat\r"
+            _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
             try:
-                self._sock.sendall(tosend.encode())
-                time.sleep(1)
-                data = self._sock.recv(bufsize)
-                if self._debug:
-                    _LOGGER.warning("Received response: '%s'", data)
-                japConfig = re.search('(?<=JAP_)\d+x\d+', data[50:-1].decode()).group(0)
-                self._txCount = int(re.search('\d+',japConfig).group(0))
-                self._rxCount = int(re.search('(?<=x)\d+',japConfig).group(0))
-                _LOGGER.info("Configured for Tx: "+str(self._txCount)+", Rx: "+str(self._rxCount))
+                data = self.rx_cmd(cmd)
+                _LOGGER.debug("Rx%d: received response [%s]", self._receiver_id, data)
+                self._rx_mac = re.search('([0-9A-F]{2}[:-]){5}([0-9A-F]{2})', data.decode()).group(0)
+                _LOGGER.info("Rx%d: receiver MAC [%s]", self._receiver_id, self._rx_mac)
+                self._state = STATE_ON
             except socket.timeout:
-                _LOGGER.warning("Connection timed out...")
-            self.disconnect()
+                _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
         except Exception:
             raise
+
+    def get_switch_config(self):
+        rx_list = {}
+        if self._switch.min_refresh_interval <= (time.time() - self._switch.last_refresh):
+            cmd = "show vlan\n"
+            _LOGGER.debug("Rx%d: sending command [%s]", cmd)
+            try:
+                data = self.switch_cmd(cmd)
+
+                if self._trace:
+                    _LOGGER.debug("Rx%d: received response [%s]", self._receiver_id, data)
+
+                if self._switch.tx_count == 0:
+                    jap_config = re.search('(?<=JAP_)\d+x\d+', data[50:-1].decode()).group(0)
+                    self._switch.tx_count = int(re.search('\d+', jap_config).group(0))
+                    self._switch.rx_count = int(re.search('(?<=x)\d+', jap_config).group(0))
+                    _LOGGER.info("Configured for Tx: %d, Rx: %d", self._switch.tx_count, self._switch.rx_count)
+
+                splits = data[50:-1].decode().splitlines()
+                run_on_line = False
+                tx_vals = ""
+                tx_id = ""
+
+                for line in splits:
+                    split_data = line.split()
+                    if not run_on_line and len(split_data) >= 3 and "TRANSMITTER_" in split_data[1]:
+                        if "gi" in split_data[2]:
+                            tx_id = split_data[1][12:]
+                            tx_vals = split_data[2].replace("gi", "")
+                            if tx_vals[-1:] == ",":
+                                run_on_line = True
+                            else:
+                                tx_vals = self.expand_range(tx_vals)
+                    elif run_on_line:
+                        tx_vals = tx_vals + split_data[0].replace("gi", "")
+                        if tx_vals[-1:] != ",":
+                            run_on_line = False
+                            tx_vals = self.expand_range(tx_vals)
+                    else:
+                        tx_vals = ""
+
+                    if not run_on_line and tx_vals != "":
+                        if self._trace:
+                            _LOGGER.debug("Split data: [%s] [%s]", str(tx_id), str(tx_vals))
+                        for port in tx_vals:
+                            rx_id = int(port) - (self._switch.tx_count + 1)
+                            if rx_id > 0:
+                                rx_list[rx_id] = int(tx_id)
+
+                    self._switch.last_response = rx_list
+
+            except socket.timeout:
+                _LOGGER.warning("Rx%d: switch connection timed out", self._receiver_id)
+            except Exception:
+                raise
+        else:
+            _LOGGER.debug("Rx%d: using cached switch configuration", self._receiver_id)
+            rx_list = self._switch.last_response
+
+        if self._trace:
+            _LOGGER.debug("Rx list: [%s]", str(rx_list))
+
+        idx = int(rx_list[self._receiver_id])
+
+        if idx in self._transmitter_id_name:
+            self._transmitter = self._transmitter_id_name[idx]
+        else:
+            self._transmitter = None
+
+        self._switch.last_refresh = time.time()
 
     def update(self):
         """Retrieve latest state."""
-        bufsize=1024
-        idx = 0
-        try:
-            self.connect(self._host, self._port)
-            rxPort = self._zone_id + self._txCount + 1
-            tosend = self._user + "\r" + self._password + "\r show interface switchport ge " + str(rxPort) + "\r"
-            if self._debug:
-                _LOGGER.warning("Sending request: '%s'", tosend)
-            try:
-                self._sock.sendall(tosend.encode())
-                time.sleep(1)
-                data = self._sock.recv(bufsize)
-                if self._debug:
-                    _LOGGER.warning("Received response: '%s'", data)
-                idx = int(re.search('(?<=TRANSMITTER_)\d+', data[50:-1].decode()).group(0))
-            except socket.timeout:
-                _LOGGER.warning("Connection timed out...")
-            self.disconnect()
-        except Exception:
-            raise
 
-        if idx in self._source_id_name:
-            self._source = self._source_id_name[idx]
-        else:
-            self._source = None
+        if self._rx_mac is not None:
+            self.get_switch_config()
+
+    @staticmethod
+    def expand_range(s):
+        r = []
+        for i in s.split(','):
+            if '-' not in i:
+                r.append(int(i))
+            else:
+                l, h = map(int, i.split('-'))
+                r += range(l, h + 1)
+        return r
+
+    def switch_cmd(self, cmd):
+        bufsize = 1024
+        timeout = 3
+        data = b''
+
+        self._switch.queue.put(threading.get_ident())
+        try:
+            begin = time.time()
+            self.connect(self._switch.host, TELNET_PORT)
+            self._switch.sock.sendall(cmd.encode())
+            regexp = re.compile(r'[a-zA-z0-9]#')
+            while ((time.time() - begin) < timeout) and (not regexp.search(data.decode())):
+                data += self._switch.sock.recv(bufsize)
+                time.sleep(0.1)
+            if self._trace:
+                _LOGGER.debug("Rx%d: command call took %f seconds", self._receiver_id, (time.time() - begin))
+                _LOGGER.debug("Rx%d: response data is [%s]", self._receiver_id, str(data))
+        finally:
+            self._switch.queue.get()
+        return data
+
+    def rx_cmd(self, cmd):
+        bufsize = 1024
+        timeout = 3
+        data = b''
+
+        begin = time.time()
+        self.connect(self._rx_ip, TELNET_PORT)
+        self._rx_sock.sendall(cmd.encode())
+        regexp = re.compile(r'#')
+        while ((time.time() - begin) < timeout) and (not regexp.search(data.decode())):
+            data += self._rx_sock.recv(bufsize)
+            time.sleep(0.1)
+        if self._trace:
+            _LOGGER.debug("Rx%d: command call took %f seconds", self._receiver_id, (time.time() - begin))
+            _LOGGER.debug("Rx%d: response data is [%s]", self._receiver_id, str(data))
+
+        return data
 
     def connect(self, host, port):
-        try:
-            if self._debug:
-                _LOGGER.warning("Connecting to device...")
-            self._sock = socket.socket()
-            self._sock.settimeout(5)
-            self._sock.connect((host, port))
-        except Exception:
-            raise
+        bufsize = 1024
+
+        if host == self._switch.host:
+            try:
+                data = self._switch.sock.recv(bufsize)
+                if self._trace:
+                    _LOGGER.debug("%s: using existing connection", host)
+                    _LOGGER.debug("%s: response data [%s]", host, data)
+            except socket.timeout:
+                if self._trace:
+                    _LOGGER.debug("%s: using existing connection", host)
+                pass
+            except Exception as e:
+                try:
+                    _LOGGER.debug("%s: connection attempt returned [%s]", host, str(e))
+                    _LOGGER.info("%s: creating new connection", host)
+                    self._switch.sock = socket.socket()
+                    self._switch.sock.settimeout(0.2)
+                    self._switch.sock.connect((host, port))
+                    cmd = self._switch.user + "\r" + self._switch.password + "\r" + "terminal datadump\r"
+                    self._switch.sock.sendall(cmd.encode())
+                    time.sleep(1)
+                    self._switch.sock.recv(bufsize)
+                except Exception:
+                    raise
+        else:
+            try:
+                data = self._rx_sock.recv(bufsize)
+                if self._trace:
+                    _LOGGER.debug("%s: using existing connection", host)
+                    _LOGGER.debug("%s: response data [%s]", host, data)
+            except socket.timeout:
+                if self._trace:
+                    _LOGGER.debug("%s: using existing connection", host)
+                pass
+            except Exception as e:
+                try:
+                    _LOGGER.debug("%s: connection attempt returned [%s]", host, str(e))
+                    _LOGGER.info("%s: creating new connection", host)
+                    self._rx_sock = socket.socket()
+                    self._rx_sock.settimeout(0.2)
+                    self._rx_sock.connect((host, port))
+                    time.sleep(0.3)
+                    self._rx_sock.recv(bufsize)
+                except Exception:
+                    raise
 
     def disconnect(self):
-        if self._debug:
-            _LOGGER.warning("Disconnecting from device...")
-        self._sock.close()
+        _LOGGER.info("Disconnecting from switch")
+        self._switch.sock.close()
+
+    def rx_disconnect(self):
+        _LOGGER.info("Rx%d: disconnecting from receiver", self._receiver_id)
+        self._rx_sock.close()
 
     @property
     def name(self):
-        """Return the name of the zone."""
-        return self._name
+        """Return the name of the receiver."""
+        return self._receiver_name
+
+    @property
+    def state(self):
+        """Return the state of the receiver."""
+        return self._state
 
     @property
     def supported_features(self):
@@ -177,66 +342,61 @@ class JustaddpowerZone(MediaPlayerDevice):
         return SUPPORT_JUSTADDPOWER
 
     @property
+    def media_image_url(self):
+        """Image url of current playing media."""
+        if self._image_pull:
+            return 'http://{0}/pull.bmp?{1}'.format(self._rx_ip, random.randrange(1, 100000000))
+        else:
+            return None
+
+    @property
     def media_title(self):
-        """Return the current source as media title."""
-        return self._source
+        """Return the current transmitter as media title."""
+        return self._transmitter
 
     @property
     def source(self):
-        """Return the current input source of the device."""
-        return self._source
+        """Return the current input transmitter of the device."""
+        return self._transmitter
 
     @property
     def source_list(self):
-        """List of available input sources."""
-        return self._source_names
+        """List of available transmitters."""
+        return self._transmitter_names
 
-    def select_source(self, source):
-        """Set input source."""
-        if source not in self._source_name_id:
+    def select_source(self, transmitter):
+        """Set input transmitter."""
+
+        if transmitter not in self._transmitter_name_id:
             return
-        idx = self._source_name_id[source]
-        _LOGGER.info("Setting zone %d source to %s", self._zone_id, idx)
+        idx = self._transmitter_name_id[transmitter]
+        _LOGGER.info("Rx%d: setting source to Tx%d", self._receiver_id, idx)
 
-        bufsize=1024
         try:
-            self.connect(self._host, self._port)
-            rxPort = self._zone_id + self._txCount + 1
-            txPort = idx + 10
-            tosend = self._user + "\r" + self._password + "\rconf\r int ge" + str(rxPort) + "\r sw g al v r 11-399\r sw g al v a " + str(txPort) + " u\r end\r"
+            rx_port = self._receiver_id + self._switch.tx_count + 1
+            tx_port = idx + 10
+            cmd = "conf\r int ge{0}\r sw g al v r 11-399\r sw g al v a {1} u\r end\r".format(str(rx_port), str(tx_port))
 
-            if self._debug:
-                _LOGGER.warning("Sending request: '%s'", tosend)
-
+            _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
             try:
-                self._sock.sendall(tosend.encode())
-                time.sleep(0.3)
-                data = self._sock.recv(bufsize)
-                if self._debug:
-                    _LOGGER.warning("Received response: '%s'", data)
+                data = self.switch_cmd(cmd)
+                if self._trace:
+                    _LOGGER.debug("Rx%d: received response [%s]", self._receiver_id, data)
             except socket.timeout:
-                _LOGGER.warning("Connection timed out...")
+                _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
 
-            self.disconnect()
+            if (self._transmitters_usb is not None) and (idx in self._transmitters_usb) and self._transmitters_usb[idx]:
+                _LOGGER.debug("Rx%d: setting USB connection", self._receiver_id)
 
-            time.sleep(1)
-            _LOGGER.debug("Connecting to: " + self._rxsubnet + "." + str(self._zone_id+1))
-            self.connect(self._rxsubnet + '.' + str(self._zone_id+1), self._port)
-            tosend = "e e_reconnect\r"
+                cmd = "e e_reconnect\r"
+                _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
+                try:
+                    self.connect(self._rx_ip, TELNET_PORT)
+                    self.rx_cmd(cmd)
+                except socket.timeout:
+                    _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
 
-            if self._debug:
-                _LOGGER.warning("Sending request: '%s'", tosend)
-
-            try:
-                self._sock.sendall(tosend.encode())
-                time.sleep(0.3)
-                data = self._sock.recv(bufsize)
-                if self._debug:
-                    _LOGGER.warning("Received response: '%s'", data)
-            except socket.timeout:
-                _LOGGER.warning("Connection timed out...")
-
-            self.disconnect()
+            self._switch.last_response[self._receiver_id] = idx
 
             return
         except Exception:
