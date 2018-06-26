@@ -20,7 +20,7 @@ The switch is polled on a regular basis to determine the current configuration, 
 | min_refresh_interval _(opt)_ | 10 | How often to refresh receiver info from switch | 10 |
 
 ## transmitters
-The transmitters are listed in the order they appear on the switch.  The IP address is automatically determined and isn't normally required.  However the option exists to override if the auto determination doesn't work.
+The transmitters are listed in the order they appear on the switch.
 
 | Parameter | Default | Description | Example |
 |:----------|:--------|:------------|:--------|
@@ -28,7 +28,7 @@ The transmitters are listed in the order they appear on the switch.  The IP addr
 | usb _(opt)_ | false | Whether this transmitter has USB | true |
 
 ## receivers
-The receivers are listed in the order they appear on the switch.  The IP address is automatically determined and isn't normally required.  However the option exists to override if the auto determination doesn't work.
+The receivers are listed in the order they appear on the switch.  The IP address is automatically determined and isn't normally required.  However the option exists to override if the auto config doesn't work.
 
 | Parameter | Default | Description | Example |
 |:----------|:--------|:------------|:--------|
@@ -42,22 +42,6 @@ The receivers are listed in the order they appear on the switch.  The IP address
   - platform: justaddpower
     switch:
       host: myswitch12345
-    receivers:
-      1:
-        name: Family Room
-        image_pull: true
-      2:
-        name: Study
-        usb: true
-      3:
-        name: Games Room
-        usb: true
-      4:
-        name: R4
-      5:
-        name: R5
-      6:
-        name: R6
     transmitters:
       1:
         name: Virgin V6
@@ -74,4 +58,20 @@ The receivers are listed in the order they appear on the switch.  The IP address
         name: PS-3
       9:
         name: Wii
+    receivers:
+      1:
+        name: Family Room
+        image_pull: true
+      2:
+        name: Study
+        usb: true
+      3:
+        name: Games Room
+        usb: true
+      4:
+        name: R4
+      5:
+        name: R5
+      6:
+        name: R6
 ```
