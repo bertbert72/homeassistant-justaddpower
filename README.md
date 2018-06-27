@@ -36,6 +36,7 @@ The receivers are listed in the order they appear on the switch.  The IP address
 | usb _(opt)_ | false | Whether this receiver has USB | true |
 | ip_address _(opt)_ | | IP address of switch | mypass~1 |
 | image_pull _(opt)_ | false | Display the image from the source | true |
+| image_pull_refresh _(opt)_ | 10 | How often to refresh the source image | 30 |
 
 # Example
 ```
@@ -65,9 +66,13 @@ The receivers are listed in the order they appear on the switch.  The IP address
       2:
         name: Study
         usb: true
+        image_pull: true
+        image_pull_refresh: 30
       3:
         name: Games Room
         usb: true
+        image_pull: true
+        image_pull_refresh: 300
       4:
         name: R4
       5:
