@@ -1,6 +1,9 @@
 # Home Assistant Just Add Power
 A Home Assistant component for the Just Add Power HD over IP 2G/3G systems.  Currently requires a supported Cisco switch configured with JADConfig.
 
+![Just Add Power component for Home Assistant](img/HA-JAP01.png "Just Add Power component for Home Assistant")
+![Source list](img/HA-JAP02.png "Source List")
+
 # Usage
 + Drop the file into the custom_components/media_player directory.
 + Edit your configuration file to add the `justaddpower` platform.
