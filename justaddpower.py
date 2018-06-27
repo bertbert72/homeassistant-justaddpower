@@ -33,6 +33,7 @@ CONF_RX_SUBNET = 'rx_subnet'
 CONF_MIN_REFRESH_INTERVAL = 'min_refresh_interval'
 CONF_USB = 'usb'
 CONF_IMAGE_PULL = 'image_pull'
+CONF_IMAGE_PULL_REFRESH = 'image_pull_refresh'
 
 DATA_JUSTADDPOWER = 'justaddpower'
 TELNET_PORT = 23
@@ -50,6 +51,7 @@ RECEIVER_SCHEMA = vol.Schema({
     vol.Optional(CONF_USB, default=False): cv.boolean,
     vol.Optional(CONF_IP_ADDRESS, default=""): cv.string,
     vol.Optional(CONF_IMAGE_PULL, default=False): cv.boolean,
+    vol.Optional(CONF_IMAGE_PULL_REFRESH, default=10): cv.positive_int,
 })
 
 TRANSMITTER_SCHEMA = vol.Schema({
@@ -97,8 +99,9 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         _LOGGER.info("Adding Rx%d - %s", receiver_id, extra[CONF_NAME])
         unique_id = "{}-{}".format(switch.host, receiver_id)
         rx_ip = extra[CONF_IP_ADDRESS] or (ipaddress.ip_address(rx_gateway + receiver_id).__str__())
-        device = JustaddpowerReceiver(switch, rx_ip, extra[CONF_IMAGE_PULL], transmitters,
-                                      transmitters_usb if extra[CONF_USB] else None, receiver_id, extra[CONF_NAME])
+        device = JustaddpowerReceiver(switch, rx_ip, extra[CONF_IMAGE_PULL], extra[CONF_IMAGE_PULL_REFRESH],
+                                      transmitters, transmitters_usb if extra[CONF_USB] else None, receiver_id,
+                                      extra[CONF_NAME])
         hass.data[DATA_JUSTADDPOWER][unique_id] = device
         devices.append(device)
 
@@ -108,7 +111,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class JustaddpowerReceiver(MediaPlayerDevice):
     """Representation of a Just Add Power receiver."""
 
-    def __init__(self, switch, rx_ip, image_pull, transmitters, transmitters_usb, receiver_id, receiver_name):
+    def __init__(self, switch, rx_ip, image_pull, image_pull_refresh, transmitters, transmitters_usb, receiver_id,
+                 receiver_name):
         """Initialize new receiver."""
 
         self._transmitter_id_name = transmitters
@@ -126,6 +130,9 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         self._rx_ip = rx_ip
         self._rx_mac = None
         self._image_pull = image_pull
+        self._image_pull_refresh = image_pull_refresh
+        self._image_pull_last_refresh = 0
+        self._image_pull_id = 0
         self._switch = switch
 
         self.get_switch_config()
@@ -345,7 +352,13 @@ class JustaddpowerReceiver(MediaPlayerDevice):
     def media_image_url(self):
         """Image url of current playing media."""
         if self._image_pull:
-            return 'http://{0}/pull.bmp?{1}'.format(self._rx_ip, random.randrange(1, 100000000))
+            if self._image_pull_refresh <= (time.time() - self._image_pull_last_refresh):
+                _LOGGER.debug("Rx%d: updating image", self._receiver_id)
+                self._image_pull_last_refresh = time.time()
+                self._image_pull_id = random.randrange(1, 100000000)
+
+            return 'http://{0}/pull.bmp?{1}'.format(self._rx_ip, self._image_pull_id)
+            
         else:
             return None
 
@@ -397,6 +410,7 @@ class JustaddpowerReceiver(MediaPlayerDevice):
                     _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
 
             self._switch.last_response[self._receiver_id] = idx
+            self._image_pull_last_refresh = 0
 
             return
         except Exception:
