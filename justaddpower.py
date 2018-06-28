@@ -17,9 +17,9 @@ import random
 import voluptuous as vol
 
 from homeassistant.components.media_player import (
-    DOMAIN, MEDIA_PLAYER_SCHEMA, PLATFORM_SCHEMA, SUPPORT_SELECT_SOURCE, MediaPlayerDevice)
+    DOMAIN, PLATFORM_SCHEMA, SUPPORT_SELECT_SOURCE, MediaPlayerDevice)
 from homeassistant.const import (
-    CONF_NAME, CONF_HOST, STATE_OFF, STATE_ON, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS)
+    CONF_NAME, CONF_HOST, CONF_URL, STATE_OFF, STATE_ON, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS)
 import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +57,7 @@ RECEIVER_SCHEMA = vol.Schema({
 TRANSMITTER_SCHEMA = vol.Schema({
     vol.Required(CONF_NAME): cv.string,
     vol.Optional(CONF_USB, default=False): cv.boolean,
+    vol.Optional(CONF_URL, default=""): cv.string,
 })
 
 # Valid receiver ids: 1-350
@@ -93,6 +94,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 
     transmitters = {transmitter_id: extra[CONF_NAME] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
     transmitters_usb = {transmitter_id: extra[CONF_USB] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
+    transmitters_url = {transmitter_id: extra[CONF_URL] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
 
     devices = []
     for receiver_id, extra in config[CONF_RECEIVERS].items():
@@ -100,8 +102,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         unique_id = "{}-{}".format(switch.host, receiver_id)
         rx_ip = extra[CONF_IP_ADDRESS] or (ipaddress.ip_address(rx_gateway + receiver_id).__str__())
         device = JustaddpowerReceiver(switch, rx_ip, extra[CONF_IMAGE_PULL], extra[CONF_IMAGE_PULL_REFRESH],
-                                      transmitters, transmitters_usb if extra[CONF_USB] else None, receiver_id,
-                                      extra[CONF_NAME])
+                                      transmitters, transmitters_usb if extra[CONF_USB] else None, transmitters_url,
+                                      receiver_id, extra[CONF_NAME])
         hass.data[DATA_JUSTADDPOWER][unique_id] = device
         devices.append(device)
 
@@ -111,8 +113,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class JustaddpowerReceiver(MediaPlayerDevice):
     """Representation of a Just Add Power receiver."""
 
-    def __init__(self, switch, rx_ip, image_pull, image_pull_refresh, transmitters, transmitters_usb, receiver_id,
-                 receiver_name):
+    def __init__(self, switch, rx_ip, image_pull, image_pull_refresh, transmitters, transmitters_usb, transmitters_url,
+                 receiver_id, receiver_name):
         """Initialize new receiver."""
 
         self._transmitter_id_name = transmitters
@@ -121,10 +123,12 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         self._transmitter_names = sorted(self._transmitter_name_id.keys(),
                                          key=lambda v: self._transmitter_name_id[v])
         self._transmitters_usb = transmitters_usb
+        self._transmitters_url = transmitters_url
         self._receiver_id = receiver_id
         self._receiver_name = receiver_name
         self._state = STATE_OFF
         self._transmitter = None
+        self._transmitter_url = ""
         self._trace = False
         self._rx_sock = None
         self._rx_ip = rx_ip
@@ -216,8 +220,10 @@ class JustaddpowerReceiver(MediaPlayerDevice):
 
         if idx in self._transmitter_id_name:
             self._transmitter = self._transmitter_id_name[idx]
+            self._transmitter_url = self._transmitters_url[idx]
         else:
             self._transmitter = None
+            self._transmitter_url = ""
 
         self._switch.last_refresh = time.time()
 
@@ -351,14 +357,14 @@ class JustaddpowerReceiver(MediaPlayerDevice):
     @property
     def media_image_url(self):
         """Image url of current playing media."""
-        if self._image_pull:
+        if self._transmitter_url != "":
+            return self._transmitter_url
+        elif self._image_pull:
             if self._image_pull_refresh <= (time.time() - self._image_pull_last_refresh):
-                _LOGGER.debug("Rx%d: updating image", self._receiver_id)
                 self._image_pull_last_refresh = time.time()
+                _LOGGER.debug("Rx%d: updating image", self._receiver_id)
                 self._image_pull_id = random.randrange(1, 100000000)
-
             return 'http://{0}/pull.bmp?{1}'.format(self._rx_ip, self._image_pull_id)
-            
         else:
             return None
 
