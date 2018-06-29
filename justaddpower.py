@@ -143,7 +143,6 @@ class JustaddpowerReceiver(MediaPlayerDevice):
 
         try:
             cmd = "ifconfig | grep eth0:stat\r"
-            _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
             try:
                 data = self.rx_cmd(cmd)
                 _LOGGER.debug("Rx%d: received response [%s]", self._receiver_id, data)
@@ -159,7 +158,7 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         rx_list = {}
         if self._switch.min_refresh_interval <= (time.time() - self._switch.last_refresh):
             cmd = "show vlan\n"
-            _LOGGER.debug("Rx%d: sending command [%s]", cmd)
+            _LOGGER.debug("Rx%d: getting switch configuration", self._receiver_id)
             try:
                 data = self.switch_cmd(cmd)
 
@@ -252,6 +251,7 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         self._switch.queue.put(threading.get_ident())
         try:
             begin = time.time()
+            _LOGGER.debug("Rx%d: send switch command [%s]", self._receiver_id, cmd.encode('unicode_escape').decode())
             self.connect(self._switch.host, TELNET_PORT)
             self._switch.sock.sendall(cmd.encode())
             regexp = re.compile(r'[a-zA-z0-9]#')
@@ -272,6 +272,7 @@ class JustaddpowerReceiver(MediaPlayerDevice):
 
         begin = time.time()
         self.connect(self._rx_ip, TELNET_PORT)
+        _LOGGER.debug("Rx%d: send receiver command [%s]", self._receiver_id, cmd.encode('unicode_escape').decode())
         self._rx_sock.sendall(cmd.encode())
         regexp = re.compile(r'#')
         while ((time.time() - begin) < timeout) and (not regexp.search(data.decode())):
@@ -396,7 +397,6 @@ class JustaddpowerReceiver(MediaPlayerDevice):
             tx_port = idx + 10
             cmd = "conf\r int ge{0}\r sw g al v r 11-399\r sw g al v a {1} u\r end\r".format(str(rx_port), str(tx_port))
 
-            _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
             try:
                 data = self.switch_cmd(cmd)
                 if self._trace:
@@ -408,7 +408,6 @@ class JustaddpowerReceiver(MediaPlayerDevice):
                 _LOGGER.debug("Rx%d: setting USB connection", self._receiver_id)
 
                 cmd = "e e_reconnect\r"
-                _LOGGER.debug("Rx%d: sending command [%s]", self._receiver_id, cmd)
                 try:
                     self.connect(self._rx_ip, TELNET_PORT)
                     self.rx_cmd(cmd)
