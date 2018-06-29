@@ -29,7 +29,7 @@ The transmitters are listed in the order they appear on the switch.
 |:----------|:--------|:------------|:--------|
 | name _(req)_ | | Friendly name | Cable Box |
 | usb _(opt)_ | false | Whether this transmitter has USB | true |
-| url _(opt)_ |  | URL to image for transmitter - takes precence over image_pull | http://mydomain.com/myimg.jpg |
+| url _(opt)_ |  | URL to static image for transmitter - takes precedence over image_pull | http://mydomain.com/myimg.jpg |
 
 ## receivers
 The receivers are listed in the order they appear on the switch.  The IP address is automatically determined and isn't normally required.  However the option exists to override if the auto config doesn't work.
