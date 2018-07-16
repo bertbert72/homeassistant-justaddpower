@@ -92,9 +92,14 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     switch.tx_count = 0
     switch.rx_count = 0
 
-    transmitters = {transmitter_id: extra[CONF_NAME] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
-    transmitters_usb = {transmitter_id: extra[CONF_USB] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
-    transmitters_url = {transmitter_id: extra[CONF_URL] for transmitter_id, extra in config[CONF_TRANSMITTERS].items()}
+    transmitters = {}
+    for transmitter_id, extra in config[CONF_TRANSMITTERS].items():
+        transmitter_info = {
+            CONF_NAME: extra[CONF_NAME],
+            CONF_USB: extra[CONF_USB],
+            CONF_URL: extra[CONF_URL],
+        }
+        transmitters[transmitter_id] = transmitter_info
 
     devices = []
     for receiver_id, extra in config[CONF_RECEIVERS].items():
@@ -102,8 +107,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         unique_id = "{}-{}".format(switch.host, receiver_id)
         rx_ip = extra[CONF_IP_ADDRESS] or (ipaddress.ip_address(rx_gateway + receiver_id).__str__())
         device = JustaddpowerReceiver(switch, rx_ip, extra[CONF_IMAGE_PULL], extra[CONF_IMAGE_PULL_REFRESH],
-                                      transmitters, transmitters_usb if extra[CONF_USB] else None, transmitters_url,
-                                      receiver_id, extra[CONF_NAME])
+                                      transmitters, receiver_id, extra[CONF_NAME])
         hass.data[DATA_JUSTADDPOWER][unique_id] = device
         devices.append(device)
 
@@ -113,22 +117,16 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class JustaddpowerReceiver(MediaPlayerDevice):
     """Representation of a Just Add Power receiver."""
 
-    def __init__(self, switch, rx_ip, image_pull, image_pull_refresh, transmitters, transmitters_usb, transmitters_url,
-                 receiver_id, receiver_name):
+    def __init__(self, switch, rx_ip, image_pull, image_pull_refresh, transmitters, receiver_id, receiver_name):
         """Initialize new receiver."""
 
-        self._transmitter_id_name = transmitters
-        self._transmitter_name_id = {v: k for k, v in transmitters.items()}
-        # ordered list of all transmitter names
-        self._transmitter_names = sorted(self._transmitter_name_id.keys(),
-                                         key=lambda v: self._transmitter_name_id[v])
-        self._transmitters_usb = transmitters_usb
-        self._transmitters_url = transmitters_url
+        self._transmitter = None
+        self._transmitters = transmitters
+        self._transmitter_name_id = {v[CONF_NAME]: k for k, v in transmitters.items()}
+        self._transmitter_names = sorted(self._transmitter_name_id.keys(), key=lambda v: self._transmitter_name_id[v])
         self._receiver_id = receiver_id
         self._receiver_name = receiver_name
         self._state = STATE_OFF
-        self._transmitter = None
-        self._transmitter_url = ""
         self._trace = False
         self._rx_sock = None
         self._rx_ip = rx_ip
@@ -217,12 +215,10 @@ class JustaddpowerReceiver(MediaPlayerDevice):
 
         idx = int(rx_list[self._receiver_id])
 
-        if idx in self._transmitter_id_name:
-            self._transmitter = self._transmitter_id_name[idx]
-            self._transmitter_url = self._transmitters_url[idx]
+        if idx in self._transmitters:
+            self._transmitter = self._transmitters[idx]
         else:
             self._transmitter = None
-            self._transmitter_url = ""
 
         self._switch.last_refresh = time.time()
 
@@ -358,8 +354,8 @@ class JustaddpowerReceiver(MediaPlayerDevice):
     @property
     def media_image_url(self):
         """Image url of current playing media."""
-        if self._transmitter_url != "":
-            return self._transmitter_url
+        if self._transmitter[CONF_URL]:
+            return self._transmitter[CONF_URL]
         elif self._image_pull:
             if self._image_pull_refresh <= (time.time() - self._image_pull_last_refresh):
                 self._image_pull_last_refresh = time.time()
@@ -372,12 +368,12 @@ class JustaddpowerReceiver(MediaPlayerDevice):
     @property
     def media_title(self):
         """Return the current transmitter as media title."""
-        return self._transmitter
+        return self._transmitter[CONF_NAME]
 
     @property
     def source(self):
         """Return the current input transmitter of the device."""
-        return self._transmitter
+        return self._transmitter[CONF_NAME]
 
     @property
     def source_list(self):
@@ -404,12 +400,13 @@ class JustaddpowerReceiver(MediaPlayerDevice):
             except socket.timeout:
                 _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
 
-            if (self._transmitters_usb is not None) and (idx in self._transmitters_usb) and self._transmitters_usb[idx]:
+            if self._transmitters[idx][CONF_USB]:
                 _LOGGER.debug("Rx%d: setting USB connection", self._receiver_id)
 
                 cmd = "e e_reconnect\r"
                 try:
                     self.connect(self._rx_ip, TELNET_PORT)
+                    time.sleep(1)
                     self.rx_cmd(cmd)
                 except socket.timeout:
                     _LOGGER.warning("Rx%d: connection timed out", self._receiver_id)
