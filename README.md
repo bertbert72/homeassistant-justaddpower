@@ -5,7 +5,8 @@ A Home Assistant component for the Just Add Power HD over IP 2G/3G systems.  Cur
 ![Source list](img/HA-JAP02.png "Source List")
 
 # Usage
-+ Drop the file into the custom_components/media_player directory.
++ Create a folder called custom_components/justaddpower.
++ Drop the files media_player.py and manifest.json into the custom_components/justaddpower directory.
 + Edit your configuration file to add the `justaddpower` platform.
 
 # Configuration
