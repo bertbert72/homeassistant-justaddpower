@@ -1,0 +1,8 @@
+{
+  "domain": "justaddpower",
+  "name": "JustAddPower",
+  "documentation": "https://github.com/bertbert72/homeassistant-justaddpower/blob/master/README.md",
+  "dependencies": [],
+  "codeowners": ["@bertbert"],
+  "requirements": []
+}
