@@ -1,5 +1,5 @@
 """
-Support for the Just Add Power HD over IP system (Cisco)
+Support for the Just Add Power HD over IP system (Cisco/Luxul)
 
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/justaddpower
@@ -19,7 +19,7 @@ import voluptuous as vol
 from homeassistant.components.media_player import (
     DOMAIN, PLATFORM_SCHEMA, SUPPORT_SELECT_SOURCE, MediaPlayerDevice)
 from homeassistant.const import (
-    CONF_NAME, CONF_HOST, CONF_URL, STATE_OFF, STATE_ON, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS)
+    CONF_NAME, CONF_HOST, CONF_URL, STATE_OFF, STATE_ON, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS, CONF_TYPE)
 import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ SWITCH_SCHEMA = vol.Schema({
     vol.Optional(CONF_PASSWORD, default="cisco"): cv.string,
     vol.Optional(CONF_RX_SUBNET, default="10.128.0.0"): cv.string,
     vol.Optional(CONF_MIN_REFRESH_INTERVAL, default=10): cv.positive_int,
+    vol.Optional(CONF_TYPE, default="cisco"): cv.string,
 })
 
 RECEIVER_SCHEMA = vol.Schema({
@@ -91,6 +92,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     switch.last_response = ""
     switch.tx_count = 0
     switch.rx_count = 0
+    switch.type = config[CONF_SWITCH].get(CONF_TYPE).lower()
 
     transmitters = {}
     for transmitter_id, extra in config[CONF_TRANSMITTERS].items():
@@ -152,6 +154,63 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         except Exception:
             raise
 
+    def decode_vlan_cisco(self, splits):
+        run_on_line = False
+        tx_vals = ""
+        tx_id = ""
+        rx_list = {}
+        for line in splits:
+            split_data = line.split()
+            if not run_on_line and len(split_data) >= 3 and "TRANSMITTER_" in split_data[1]:
+                if "gi" in split_data[2]:
+                    tx_id = split_data[1][12:]
+                    tx_vals = split_data[2].replace("gi", "")
+                    if tx_vals[-1:] == ",":
+                        run_on_line = True
+                    else:
+                        tx_vals = self.expand_range(tx_vals)
+            elif run_on_line:
+                tx_vals = tx_vals + split_data[0].replace("gi", "")
+                if tx_vals[-1:] != ",":
+                    run_on_line = False
+                    tx_vals = self.expand_range(tx_vals)
+            else:
+                tx_vals = ""
+
+            if not run_on_line and tx_vals != "":
+                if self._trace:
+                    _LOGGER.debug("Split data: [%s] [%s]", str(tx_id), str(tx_vals))
+                for port in tx_vals:
+                    rx_id = int(port) - (self._switch.tx_count + 1)
+                    if rx_id > 0:
+                        rx_list[rx_id] = int(tx_id)
+
+            self._switch.last_response = rx_list
+
+    def decode_vlan_luxul(self, splits):
+        tx_vals = ""
+        tx_id = ""
+        rx_list = {}
+        for line in splits:
+            split_data = line.split()
+            if len(split_data) >= 3 and "TX_" in split_data[1]:
+                if "Gi" in split_data[2]:
+                    tx_id = int(re.search('\d+', split_data[1]).group(0))
+                    tx_vals = split_data[3].replace("1/", "")
+                    tx_vals = self.expand_range(tx_vals)
+            else:
+                tx_vals = ""
+
+            if tx_vals != "":
+                if self._trace:
+                    _LOGGER.debug("Split data: [%s] [%s]", str(tx_id), str(tx_vals))
+                for port in tx_vals:
+                    rx_id = int(port) - (self._switch.tx_count + 1)
+                    if rx_id > 0:
+                        rx_list[rx_id] = int(tx_id)
+
+            self._switch.last_response = rx_list
+
     def get_switch_config(self):
         rx_list = {}
         if self._switch.min_refresh_interval <= (time.time() - self._switch.last_refresh):
@@ -170,37 +229,11 @@ class JustaddpowerReceiver(MediaPlayerDevice):
                     _LOGGER.info("Configured for Tx: %d, Rx: %d", self._switch.tx_count, self._switch.rx_count)
 
                 splits = data[50:-1].decode().splitlines()
-                run_on_line = False
-                tx_vals = ""
-                tx_id = ""
 
-                for line in splits:
-                    split_data = line.split()
-                    if not run_on_line and len(split_data) >= 3 and "TRANSMITTER_" in split_data[1]:
-                        if "gi" in split_data[2]:
-                            tx_id = split_data[1][12:]
-                            tx_vals = split_data[2].replace("gi", "")
-                            if tx_vals[-1:] == ",":
-                                run_on_line = True
-                            else:
-                                tx_vals = self.expand_range(tx_vals)
-                    elif run_on_line:
-                        tx_vals = tx_vals + split_data[0].replace("gi", "")
-                        if tx_vals[-1:] != ",":
-                            run_on_line = False
-                            tx_vals = self.expand_range(tx_vals)
-                    else:
-                        tx_vals = ""
-
-                    if not run_on_line and tx_vals != "":
-                        if self._trace:
-                            _LOGGER.debug("Split data: [%s] [%s]", str(tx_id), str(tx_vals))
-                        for port in tx_vals:
-                            rx_id = int(port) - (self._switch.tx_count + 1)
-                            if rx_id > 0:
-                                rx_list[rx_id] = int(tx_id)
-
-                    self._switch.last_response = rx_list
+                if self._switch.type == 'cisco':
+                    self.decode_vlan_cisco(splits)
+                else:
+                    self.decode_vlan_luxul(splits)
 
             except socket.timeout:
                 _LOGGER.warning("Rx%d: switch connection timed out", self._receiver_id)
@@ -391,7 +424,10 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         try:
             rx_port = self._receiver_id + self._switch.tx_count + 1
             tx_port = idx + 10
-            cmd = "conf\r int ge{0}\r sw g al v r 11-399\r sw g al v a {1} u\r end\r".format(str(rx_port), str(tx_port))
+            if self._switch[CONF_TYPE].lower() == 'cisco':
+                cmd = "conf\r int ge{0}\r sw g al v r 11-399\r sw g al v a {1} u\r end\r".format(str(rx_port), str(tx_port))
+            else:
+                cmd = "conf t\r int ge{0}\r sw hy al vl rem 11-399\r sw hy al vl ad {1}\r end\r".format(str(rx_port), str(tx_port))
 
             try:
                 data = self.switch_cmd(cmd)
