@@ -241,7 +241,8 @@ class JustaddpowerReceiver(MediaPlayerDevice):
                 raise
         else:
             _LOGGER.debug("Rx%d: using cached switch configuration", self._receiver_id)
-            rx_list = self._switch.last_response
+        
+        rx_list = self._switch.last_response
 
         if self._trace:
             _LOGGER.debug("Rx list: [%s]", str(rx_list))
