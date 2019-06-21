@@ -425,7 +425,7 @@ class JustaddpowerReceiver(MediaPlayerDevice):
         try:
             rx_port = self._receiver_id + self._switch.tx_count + 1
             tx_port = idx + 10
-            if self._switch[CONF_TYPE].lower() == 'cisco':
+            if self._switch.type.lower() == 'cisco':
                 cmd = "conf\r int ge{0}\r sw g al v r 11-399\r sw g al v a {1} u\r end\r".format(str(rx_port), str(tx_port))
             else:
                 cmd = "conf t\r int ge{0}\r sw hy al vl rem 11-399\r sw hy al vl ad {1}\r end\r".format(str(rx_port), str(tx_port))
