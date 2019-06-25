@@ -188,13 +188,15 @@ class JustaddpowerReceiver(object):
         except Exception as e:
             try:
                 print(f"{host}: connection attempt returned [{e}]")
-                print(f"{host}: creating new connection", )
+                print(f"{host}: creating new connection")
                 self._switch.sock = socket.socket()
                 self._switch.sock.settimeout(0.2)
                 self._switch.sock.connect((host, port))
-                cmd = self._switch.user + "\r" + self._switch.password + "\r" + "terminal datadump\r"
+                print(f"{host}: connected, sending username/password")
+                cmd = self._switch.user + "\r" + self._switch.password + "\r" # + "terminal datadump\r"
                 self._switch.sock.sendall(cmd.encode())
                 time.sleep(1)
+                print(f"{host}: username/password sent, retrieving response")
                 self._switch.sock.recv(bufsize)
             except Exception:
                 raise
