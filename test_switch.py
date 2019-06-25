@@ -9,7 +9,7 @@ CONF_NAME = 'name'
 TELNET_PORT = 23
 
 switch = types.SimpleNamespace()
-switch.host = 'switch7cbebc'
+switch.host = 'japluxul01'
 switch.user = 'cisco'
 switch.password = 'cisco'
 switch.min_refresh_interval = 0
@@ -19,7 +19,7 @@ switch.last_refresh = 0
 switch.last_response = ""
 switch.tx_count = 0
 switch.rx_count = 0
-switch.type = 'cisco'
+switch.type = 'luxul'
 
 
 class JustaddpowerReceiver(object):
@@ -204,4 +204,4 @@ class JustaddpowerReceiver(object):
         self._switch.sock.close()
 
 
-cisco = JustaddpowerReceiver(switch, {1: {'name': 'Cable1'}, 2: {'name': 'Cable2'}}, 1, 'Reception')
+config = JustaddpowerReceiver(switch, {1: {'name': 'Cable1'}, 2: {'name': 'Cable2'}}, 1, 'Reception')
