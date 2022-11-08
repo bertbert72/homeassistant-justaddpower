@@ -1,8 +1,9 @@
 {
   "domain": "justaddpower",
   "name": "JustAddPower",
-  "documentation": "https://github.com/bertbert72/homeassistant-justaddpower/blob/master/README.md",
+  "documentation": "https://github.com/bertbert72/HomeAssistant_VirginTivo/blob/master/README.md",
   "dependencies": [],
-  "codeowners": ["@bertbert"],
-  "requirements": []
+  "codeowners": ["@bertbert72"],
+  "requirements": [],
+  "version": "0.1.0"
 }
